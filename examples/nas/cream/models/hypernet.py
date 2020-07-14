@@ -104,12 +104,11 @@ class SuperNet(nn.Module):
                 yield param
 
         if not meta:
-            for layer, layer_arch in zip(self.blocks, architecture):
-                for blocks, arch in zip(layer, layer_arch):
-                    if arch == -1:
-                        continue
-                    for name, param in blocks[arch].named_parameters(recurse=True):
-                        yield param
+            for layer, layer_arch in zip(self.blocks, architecture.keys()):
+                for choice_idx, choice in enumerate(architecture[layer_arch]):
+                    if choice:
+                        for name, param in layer[choice_idx].named_parameters(recurse=True):
+                            yield param
 
 
 def search_for_layer(flops_op_dict, arch_def, flops_minimum, flops_maximum):

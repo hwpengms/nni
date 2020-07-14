@@ -25,18 +25,18 @@ class LatencyEst(object):
 
         input = model.conv_stem(input)
 
-        for block_id, block in enumerate(model.blocks):
-            self.flops_dict[block_id] = {}
-            self.params_dict[block_id] = {}
-            for module_id, module in enumerate(block):
-                self.flops_dict[block_id][module_id] = {}
-                self.params_dict[block_id][module_id] = {}
-                for choice_id, choice in enumerate(module):
-                    flops, params = get_model_complexity_info(choice, tuple(input.shape[1:]),  as_strings=False, print_per_layer_stat=False)
-                    self.flops_dict[block_id][module_id][choice_id] = flops / 1e6 # M
-                    self.params_dict[block_id][module_id][choice_id] = params /1e6 # M
+        # for block_id, block in enumerate(model.blocks):
+       #  self.flops_dict[block_id] = {}
+        # self.params_dict[block_id] = {}
+        for module_id, module in enumerate(model.blocks):
+            self.flops_dict[module_id] = {}
+            self.params_dict[module_id] = {}
+            for choice_id, choice in enumerate(module):
+                flops, params = get_model_complexity_info(choice, tuple(input.shape[1:]),  as_strings=False, print_per_layer_stat=False)
+                self.flops_dict[module_id][choice_id] = flops / 1e6 # M
+                self.params_dict[module_id][choice_id] = params /1e6 # M
 
-                input = choice(input)
+            input = choice(input)
 
         # conv_last
         flops, params = get_model_complexity_info(model.global_pool, tuple(input.shape[1:]), as_strings=False, print_per_layer_stat=False)
@@ -53,25 +53,25 @@ class LatencyEst(object):
     # return params (M)
     def get_params(self, arch):
         params = 0
-        for block_id, block in enumerate(arch):
-            for module_id, choice in enumerate(block):
-                if choice == -1:
-                    continue
-                params += self.params_dict[block_id][module_id][choice]
+        for block_id, block in enumerate(arch.keys()):
+            if block is 'LayerChoice1' or block is 'LayerChoice23':
+                continue
+            for idx, choice in enumerate(arch[block]):
+                params += self.params_dict[block_id][idx] * (choice is True)
         return params + self.params_fixed
 
     # return flops (M)
     def get_flops(self, arch):
         flops = 0
-        for block_id, block in enumerate(arch):
-            for module_id, choice in enumerate(block):
-                if choice == -1:
-                    continue
-                flops += self.flops_dict[block_id][module_id][choice]
+        for block_id, block in enumerate(arch.keys()):
+            if block is 'LayerChoice1' or block_id is 'LayerChoice23':
+                continue
+            for idx, choice in enumerate(arch[block]):
+                flops += self.flops_dict[block_id][idx] * (1 if choice else 0)
         return flops + self.flops_fixed
 
 if __name__ == '__main__':
-    from lib.models.hypernet import _gen_supernet
+    from models.hypernet import _gen_supernet
     model = _gen_supernet()
     est = LatencyEst(model)
     print(est.get_flops([[0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0]]))

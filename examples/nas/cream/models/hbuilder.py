@@ -292,7 +292,7 @@ class SuperNetBuilder:
                 logging.info('Stack: {}'.format(stage_idx))
             assert isinstance(stage_block_args, list)
 
-            blocks = []
+            # blocks = []
             # each stack (stage) contains a list of block arguments
             for block_idx, block_args in enumerate(stage_block_args):
                 last_block = block_idx == (len(stage_block_args) - 1)
@@ -362,13 +362,13 @@ class SuperNetBuilder:
                                                block.conv_dw.stride[0])
                         choice_blocks.append(block)
 
-                choice_blocks = mutables.LayerChoice(choice_blocks)
-                blocks.append(choice_blocks)
+                choice_block = mutables.LayerChoice(choice_blocks)
+                stages.append(choice_block)
                 # create the block
                 # block = self._make_block(block_args, total_block_idx, total_block_count)
                 total_block_idx += 1  # incr global block idx (across all stacks)
 
-            stages.append(blocks)
+            # stages.append(blocks)
         return stages
 
 

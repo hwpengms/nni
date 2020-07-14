@@ -4,6 +4,8 @@
 import logging
 
 import numpy as np
+
+from nni.nas.pytorch.mutables import LayerChoice, InputChoice
 from nni.nas.pytorch.random import RandomMutator
 
 _logger = logging.getLogger(__name__)
@@ -56,17 +58,7 @@ class CreamSupernetTrainingMutator(RandomMutator):
         dict
         """
 
-        prob = self.get_prob()
-
-        if prob is None:
-            get_random_cand = [np.random.choice(self.CHOICE_NUM, item).tolist() for item in self.sta_num]
-        else:
-            get_random_cand = [np.random.choice(self.CHOICE_NUM, item, prob).tolist() for item in self.sta_num]
-
-        get_random_cand.insert(0, [0])
-        get_random_cand.append([0])
-
-        return get_random_cand
+        return super(CreamSupernetTrainingMutator, self).sample_search()
 
     def sample_final(self):
         """

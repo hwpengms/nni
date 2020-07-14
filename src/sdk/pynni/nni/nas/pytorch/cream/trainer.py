@@ -57,14 +57,20 @@ class CreamSupernetTrainer(Trainer):
                  est=None, meta_sta_epoch=20, update_iter=200, slices=2, pool_size=10,
                  pick_method='meta', lr_scheduler=None, distributed=True, local_rank=0, val_loss=None):
         assert torch.cuda.is_available()
-        super().__init__(model, mutator if mutator is not None else CreamSupernetTrainingMutator(model),
-                         loss, optimizer, num_epochs, None, None,
-                         batch_size, workers, device, log_frequency, callbacks)
-
+        super(CreamSupernetTrainer, self).__init__(model, mutator, loss, None, optimizer, num_epochs,
+                                                   train_loader, valid_loader, batch_size, 8,
+                                                   'cuda', log_frequency, None)
         self.train_loader = train_loader
         self.valid_loader = valid_loader
+        self.log_frequency = log_frequency
+        self.batch_size = batch_size
+        self.mutator = mutator
+        self.optimizer = optimizer
+        self.model = model
+        self.loss = loss
         self.est = est
         self.best_children_pool = []
+        self.num_epochs = num_epochs
         self.meta_sta_epoch = meta_sta_epoch
         self.update_iter = update_iter
         self.slices = slices
@@ -74,6 +80,8 @@ class CreamSupernetTrainer(Trainer):
         self.distributed = distributed
         self.val_loss = val_loss
         self.lr_scheduler = lr_scheduler
+        self.callbacks = []
+        self.arch_dict = dict()
 
     def cross_entropy_loss_with_soft_target(self, pred, soft_target):
         logsoftmax = nn.LogSoftmax()
@@ -127,20 +135,26 @@ class CreamSupernetTrainer(Trainer):
                     elif self.pick_method == 'meta':
                         meta_value, cand_idx, cand = -1000000000, -1, None
                         for now_idx, item in enumerate(self.best_children_pool):
-                            inputx = item[4]
-                            output = F.softmax(self.model(inputx, self.mutator._cache), dim=1)
-                            weight = get_model(self.model).forward_meta(output - item[5])
+                            inputx = item[3]
+                            output = F.softmax(self.model(inputx), dim=1)
+                            weight = get_model(self.model).forward_meta(output - item[4])
                             if weight > meta_value:
                                 meta_value = weight  # deepcopy(torch.nn.functional.sigmoid(weight))
                                 cand_idx = now_idx
-                                cand = self.best_children_pool[cand_idx][3]
+                                cand = self.arch_dict[(self.best_children_pool[cand_idx][0],
+                                                       self.best_children_pool[cand_idx][2])]
                         assert cand is not None
                         meta_value = torch.nn.functional.sigmoid(-weight)
                     else:
                         raise ValueError('Method Not supported')
 
                     u_output = self.model(x)
-                    u_teacher_output = self.model(x, cand)
+
+                    saved_cache = self.mutator._cache
+                    self.mutator._cache = cand
+                    u_teacher_output = self.model(x)
+                    self.mutator._cache = saved_cache
+
                     u_soft_label = F.softmax(u_teacher_output, dim=1)
                     kd_loss = meta_value * self.cross_entropy_loss_with_soft_target(u_output, u_soft_label)
                     self.optimizer.zero_grad()
@@ -165,7 +179,7 @@ class CreamSupernetTrainer(Trainer):
                         del weight.grad
 
                     held_out_x = input[slice:slice * 2].clone()
-                    output_2 = self.model(held_out_x, self.mutator._cache)
+                    output_2 = self.model(held_out_x)
                     valid_loss = self.loss(output_2, target[slice:slice * 2])
                     self.optimizer.zero_grad()
 
@@ -204,13 +218,14 @@ class CreamSupernetTrainer(Trainer):
                 elif self.pick_method == 'meta':
                     meta_value, cand_idx, cand = -1000000000, -1, None
                     for now_idx, item in enumerate(self.best_children_pool):
-                        inputx = item[4]
-                        output = F.softmax(self.model(inputx, self.mutator._cache), dim=1)
-                        weight = get_model(self.model).forward_meta(output - item[5])
+                        inputx = item[3]
+                        output = F.softmax(self.model(inputx), dim=1)
+                        weight = get_model(self.model).forward_meta(output - item[4])
                         if weight > meta_value:
                             meta_value = weight  # deepcopy(torch.nn.functional.sigmoid(weight))
                             cand_idx = now_idx
-                            cand = self.best_children_pool[cand_idx][3]
+                            cand = self.arch_dict[(self.best_children_pool[cand_idx][0],
+                                                   self.best_children_pool[cand_idx][2])]
                     assert cand is not None
                     meta_value = torch.nn.functional.sigmoid(-weight)
                 else:
@@ -226,7 +241,15 @@ class CreamSupernetTrainer(Trainer):
             else:
                 output = self.model(input)
                 with torch.no_grad():
-                    teacher_output = self.model(input, cand).detach()
+                    # save student arch
+                    saved_cache = self.mutator._cache
+                    self.mutator._cache = cand
+
+                    # forward
+                    teacher_output = self.model(input).detach()
+
+                    # restore student arch
+                    self.mutator._cache = saved_cache
                     soft_label = F.softmax(teacher_output, dim=1)
                 kd_loss = self.cross_entropy_loss_with_soft_target(output, soft_label)
                 valid_loss = self.loss(output, target)
@@ -244,20 +267,21 @@ class CreamSupernetTrainer(Trainer):
             # best_children_pool = sorted(best_children_pool, reverse=True)
             if epoch > self.meta_sta_epoch and (
                     (len(self.best_children_pool) < self.pool_size) or (prec1 > self.best_children_pool[-1][1] + 5) or (
-                    prec1 > best_children_pool[-1][1] and cand_flops < best_children_pool[-1][2])):
+                    prec1 > self.best_children_pool[-1][1] and cand_flops < self.best_children_pool[-1][2])):
                 val_prec1 = prec1
                 training_data = deepcopy(input[:self.slices].detach())
-                if len(best_children_pool) == 0:
+                if len(self.best_children_pool) == 0:
                     features = deepcopy(output[:self.slices].detach())
                 else:
                     features = deepcopy(teacher_output[:self.slices].detach())
-                best_children_pool.append(
-                    (val_prec1, prec1, cand_flops, self.mutator._cache, training_data, F.softmax(features, dim=1)))
-                best_children_pool = sorted(best_children_pool, reverse=True)
+                self.best_children_pool.append(
+                    (val_prec1, prec1, cand_flops, training_data, F.softmax(features, dim=1)))
+                self.arch_dict[(val_prec1, cand_flops)] = self.mutator._cache
+                self.best_children_pool = sorted(self.best_children_pool, reverse=True)
 
-            if len(best_children_pool) > self.pool_size:
-                best_children_pool = sorted(best_children_pool, reverse=True)
-                del best_children_pool[-1]
+            if len(self.best_children_pool) > self.pool_size:
+                self.best_children_pool = sorted(self.best_children_pool, reverse=True)
+                del self.best_children_pool[-1]
 
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
@@ -267,7 +291,7 @@ class CreamSupernetTrainer(Trainer):
                             self.num_epochs, step + 1, len(self.train_loader), meters)
 
         if self.main_proc:
-            for idx, i in enumerate(best_children_pool):
+            for idx, i in enumerate(self.best_children_pool):
                 logger.info("No.{} {}".format(idx, i[:4]))
 
     def validate_one_epoch(self, epoch):

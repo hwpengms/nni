@@ -29,7 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 from nni.nas.pytorch.cream import CreamSupernetTrainer
 from nni.nas.pytorch.cream import CreamSupernetTrainingMutator
 
-logger = logging.getLogger("nni.spos.supernet")
+logger = logging.getLogger("nni.cream.supernet")
 
 
 def add_weight_decay_supernet(model, args, weight_decay=1e-5, skip_list=()):
@@ -131,7 +131,7 @@ def main():
     parser.add_argument('--weight-decay', type=float, default=0.0001,
                         help='weight decay (default: 0.0001)')
     # Learning rate schedule parameters
-    parser.add_argument('--sched', default='step', type=str, metavar='SCHEDULER',
+    parser.add_argument('--sched', default='spos_linear', type=str, metavar='SCHEDULER',
                         help='LR scheduler (default: "step"')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                         help='learning rate (default: 0.01)')
@@ -139,7 +139,7 @@ def main():
                         help='warmup learning rate (default: 0.0001)')
     parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
-    parser.add_argument('--epochs', type=int, default=200, metavar='N',
+    parser.add_argument('--epochs', type=int, default=120, metavar='N',
                         help='number of epochs to train (default: 2)')
     parser.add_argument('--start-epoch', default=None, type=int, metavar='N',
                         help='manual epoch number (useful on restarts)')
@@ -196,7 +196,7 @@ def main():
     parser.add_argument('--num-gpu', type=int, default=1,
                         help='Number of GPUS to use')
     parser.add_argument("--local_rank", default=0, type=int)
-    parser.add_argument("--update_iter", default=1300, type=int)
+    parser.add_argument("--update_iter", default=1, type=int)
     parser.add_argument("--slice", default=4, type=int)
     parser.add_argument("--pool_size", default=10, type=int)
     parser.add_argument('--resunit', action='store_true', default=False,
@@ -204,13 +204,11 @@ def main():
     parser.add_argument('--dil_conv', action='store_true', default=False,
                         help='Start with pretrained version of specified network (if avail)')
     parser.add_argument('--tiny', action='store_true', default=False)
-    parser.add_argument('--update_1nd', action='store_true', default=False)
-    parser.add_argument('--update_2nd', action='store_true', default=False)
     parser.add_argument('--flops_maximum', default=600, type=int)
     parser.add_argument('--flops_minimum', default=0, type=int)
     parser.add_argument('--pick_method', default='meta', type=str)
-    parser.add_argument('--meta_lr', default=1e-4, type=float)
-    parser.add_argument('--meta_sta_epoch', default=20, type=int)
+    parser.add_argument('--meta_lr', default=1e-2, type=float)
+    parser.add_argument('--meta_sta_epoch', default=-1, type=int)
     parser.add_argument('--how_to_prob', default='pre_prob', type=str)
     parser.add_argument('--pre_prob', default=(0.05, 0.2, 0.05, 0.5, 0.05, 0.15), type=tuple)
     args = parser.parse_args()
@@ -221,7 +219,6 @@ def main():
     np.random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
-    args.prefetcher = not args.no_prefetcher
     args.distributed = False
     if 'WORLD_SIZE' in os.environ:
         args.distributed = int(os.environ['WORLD_SIZE']) > 1
@@ -353,7 +350,6 @@ def main():
             input_size=data_config['input_size'],
             batch_size=args.batch_size,
             is_training=True,
-            use_prefetcher=args.prefetcher,
             re_prob=args.reprob,
             re_mode=args.remode,
             color_jitter=args.color_jitter,
@@ -376,7 +372,6 @@ def main():
             input_size=data_config['input_size'],
             batch_size=4 * args.batch_size,
             is_training=False,
-            use_prefetcher=args.prefetcher,
             interpolation=data_config['interpolation'],
             mean=data_config['mean'],
             std=data_config['std'],
@@ -391,9 +386,9 @@ def main():
 
     trainer = CreamSupernetTrainer(model, criterion, optimizer, args.epochs,
                                    train_loader=loader_train, valid_loader=loader_eval,
-                                   mutator=mutator, batch_size=args.batch_size, workers=args.workers,
+                                   mutator=mutator, batch_size=args.batch_size,
                                    log_frequency=args.log_interval, est=model_est, meta_sta_epoch=args.meta_sta_epoch,
-                                   update_iter=args.update_iter, slices=args.slices, pool_size=args.pool_size,
+                                   update_iter=args.update_iter, slices=args.slice, pool_size=args.pool_size,
                                    pick_method=args.pick_method, lr_scheduler=lr_scheduler, distributed=args.distributed,
                                    local_rank=args.local_rank, val_loss=val_loss)
     trainer.train()
