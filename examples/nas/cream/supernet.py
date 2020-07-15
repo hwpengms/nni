@@ -301,16 +301,6 @@ def main():
         optimizer.load_state_dict(optimizer_state['optimizer'])
 
     if args.distributed:
-        if args.sync_bn:
-            try:
-                if has_apex:
-                    model = convert_syncbn_model(model)
-                else:
-                    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-                if args.local_rank == 0:
-                    logger.info('Converted model to use Synchronized BatchNorm.')
-            except Exception as e:
-                logging.error('Failed to enable Synchronized BatchNorm. Install Apex or Torch >= 1.1')
         if has_apex:
             model = DDP(model, delay_allreduce=True)
         else:
