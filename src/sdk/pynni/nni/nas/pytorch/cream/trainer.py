@@ -286,7 +286,7 @@ class CreamSupernetTrainer(Trainer):
             if self.lr_scheduler is not None:
                 self.lr_scheduler.step()
 
-            if self.log_frequency is not None and step % self.log_frequency == 0:
+            if self.main_proc and self.log_frequency is not None and step % self.log_frequency == 0:
                 logger.info("Epoch [%s/%s] Step [%s/%s]  %s", epoch + 1,
                             self.num_epochs, step + 1, len(self.train_loader), meters)
 
