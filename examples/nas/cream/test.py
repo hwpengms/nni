@@ -17,7 +17,8 @@ except ImportError:
     has_apex = False
 
 from dataset import Dataset, create_loader, resolve_data_config
-from models.hypernet import _gen_supernet
+from models.model import _gen_childnet
+import torch.distributed as dist
 from utils.flops_table import LatencyEst
 from utils.helpers import *
 from utils.EMA import ModelEma
@@ -30,7 +31,6 @@ from nni.nas.pytorch.cream import CreamSupernetTrainer
 from nni.nas.pytorch.cream import CreamSupernetTrainingMutator
 
 logger = logging.getLogger("nni.cream.supernet")
-
 
 def add_weight_decay_supernet(model, args, weight_decay=1e-5, skip_list=()):
     decay = []
@@ -209,6 +209,7 @@ def main():
     parser.add_argument('--pick_method', default='meta', type=str)
     parser.add_argument('--meta_lr', default=1e-2, type=float)
     parser.add_argument('--meta_sta_epoch', default=-1, type=int)
+    parser.add_argument('--model_selection', default=14, type=int)
     parser.add_argument('--how_to_prob', default='pre_prob', type=str)
     parser.add_argument('--pre_prob', default=(0.05, 0.2, 0.05, 0.5, 0.05, 0.15), type=tuple)
     args = parser.parse_args()
@@ -247,45 +248,149 @@ def main():
     else:
         logging.info('Training with a single process on %d GPUs.' % args.num_gpu)
 
-    model, sta_num, size_factor = _gen_supernet(
-        flops_minimum=args.flops_minimum,
-        flops_maximum=args.flops_maximum,
+    if args.model_selection == 470:
+        arch_list = [[0], [3, 4, 3, 1], [3, 2, 3, 0], [3, 3, 3, 1], [3, 3, 3, 3], [3, 3, 3, 3], [0]]
+        arch_def = [
+            # stage 0, 112x112 in
+            ['ds_r1_k3_s1_e1_c16_se0.25'],
+            # stage 1, 112x112 in
+            ['ir_r1_k3_s2_e4_c24_se0.25', 'ir_r1_k3_s1_e4_c24_se0.25', 'ir_r1_k3_s1_e4_c24_se0.25',
+             'ir_r1_k3_s1_e4_c24_se0.25'],
+            # stage 2, 56x56 in
+            ['ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k5_s1_e4_c40_se0.25', 'ir_r1_k5_s2_e4_c40_se0.25',
+             'ir_r1_k5_s2_e4_c40_se0.25'],
+            # stage 3, 28x28 in
+            ['ir_r1_k3_s2_e6_c80_se0.25', 'ir_r1_k3_s1_e4_c80_se0.25', 'ir_r1_k3_s1_e4_c80_se0.25',
+             'ir_r2_k3_s1_e4_c80_se0.25'],
+            # stage 4, 14x14in
+            ['ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25',
+             'ir_r1_k3_s1_e6_c96_se0.25'],
+            # stage 5, 14x14in
+            ['ir_r1_k5_s2_e6_c192_se0.25', 'ir_r1_k5_s1_e6_c192_se0.25', 'ir_r1_k5_s2_e6_c192_se0.25',
+             'ir_r1_k5_s2_e6_c192_se0.25'],
+            # stage 6, 7x7 in
+            ['cn_r1_k1_s1_c320_se0.25'],
+        ]
+        args.img_size = 224
+    elif args.model_selection == 42:
+        arch_list = [[0], [3], [3, 1], [3, 1], [3, 3, 3], [3, 3], [0]]
+        arch_def = [
+            # stage 0, 112x112 in
+            ['ds_r1_k3_s1_e1_c16_se0.25'],
+            # stage 1, 112x112 in
+            ['ir_r1_k3_s2_e4_c24_se0.25'],
+            # stage 2, 56x56 in
+            ['ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k5_s2_e4_c40_se0.25'],
+            # stage 3, 28x28 in
+            ['ir_r1_k3_s2_e6_c80_se0.25', 'ir_r1_k3_s2_e6_c80_se0.25'],
+            # stage 4, 14x14in
+            ['ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25'],
+            # stage 5, 14x14in
+            ['ir_r1_k5_s2_e6_c192_se0.25', 'ir_r1_k5_s2_e6_c192_se0.25'],
+            # stage 6, 7x7 in
+            ['cn_r1_k1_s1_c320_se0.25'],
+        ]
+        args.img_size = 96
+    elif args.model_selection == 14:
+        arch_list = [[0], [3], [3, 3], [3, 3], [3], [3], [0]]
+        arch_def = [
+            # stage 0, 112x112 in
+            ['ds_r1_k3_s1_e1_c16_se0.25'],
+            # stage 1, 112x112 in
+            ['ir_r1_k3_s2_e4_c24_se0.25'],
+            # stage 2, 56x56 in
+            ['ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k3_s2_e4_c40_se0.25'],
+            # stage 3, 28x28 in
+            ['ir_r1_k3_s2_e6_c80_se0.25', 'ir_r1_k3_s2_e4_c80_se0.25'],
+            # stage 4, 14x14in
+            ['ir_r1_k3_s1_e6_c96_se0.25'],
+            # stage 5, 14x14in
+            ['ir_r1_k5_s2_e6_c192_se0.25'],
+            # stage 6, 7x7 in
+            ['cn_r1_k1_s1_c320_se0.25'],
+        ]
+        args.img_size = 64
+    elif args.model_selection == 112:
+        arch_list = [[0], [3], [3, 3], [3, 3], [3, 3, 3], [3, 3], [0]]
+        arch_def = [
+            # stage 0, 112x112 in
+            ['ds_r1_k3_s1_e1_c16_se0.25'],
+            # stage 1, 112x112 in
+            ['ir_r1_k3_s2_e4_c24_se0.25'],
+            # stage 2, 56x56 in
+            ['ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k3_s2_e4_c40_se0.25'],
+            # stage 3, 28x28 in
+            ['ir_r1_k3_s2_e6_c80_se0.25', 'ir_r1_k3_s2_e6_c80_se0.25'],
+            # stage 4, 14x14in
+            ['ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25'],
+            # stage 5, 14x14in
+            ['ir_r1_k5_s2_e6_c192_se0.25', 'ir_r1_k5_s2_e6_c192_se0.25'],
+            # stage 6, 7x7 in
+            ['cn_r1_k1_s1_c320_se0.25'],
+        ]
+        args.img_size = 160
+    elif args.model_selection == 285:
+        arch_list = [[0], [3], [3, 3], [3, 1, 3], [3, 3, 3, 3], [3, 3, 3], [0]]
+        arch_def = [
+            # stage 0, 112x112 in
+            ['ds_r1_k3_s1_e1_c16_se0.25'],
+            # stage 1, 112x112 in
+            ['ir_r1_k3_s2_e4_c24_se0.25'],
+            # stage 2, 56x56 in
+            ['ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k5_s2_e4_c40_se0.25'],
+            # stage 3, 28x28 in
+            ['ir_r1_k3_s2_e6_c80_se0.25', 'ir_r1_k3_s2_e6_c80_se0.25', 'ir_r1_k3_s2_e6_c80_se0.25'],
+            # stage 4, 14x14in
+            ['ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25',
+             'ir_r1_k3_s1_e6_c96_se0.25'],
+            # stage 5, 14x14in
+            ['ir_r1_k5_s2_e6_c192_se0.25', 'ir_r1_k5_s2_e6_c192_se0.25', 'ir_r1_k5_s2_e6_c192_se0.25'],
+            # stage 6, 7x7 in
+            ['cn_r1_k1_s1_c320_se0.25'],
+        ]
+        args.img_size = 224
+    elif args.model_selection == 600:
+        arch_list = [[0], [3, 3, 2, 3, 3], [3, 2, 3, 2, 3], [3, 2, 3, 2, 3], [3, 3, 2, 2, 3, 3], [3, 3, 2, 3, 3, 3],
+                     [0]]
+        arch_def = [
+            # stage 0, 112x112 in
+            ['ds_r1_k3_s1_e1_c16_se0.25'],
+            # stage 1, 112x112 in
+            ['ir_r1_k3_s2_e4_c24_se0.25', 'ir_r1_k3_s2_e4_c24_se0.25', 'ir_r1_k3_s2_e4_c24_se0.25',
+             'ir_r1_k3_s2_e4_c24_se0.25', 'ir_r1_k3_s2_e4_c24_se0.25'],
+            # stage 2, 56x56 in
+            ['ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k5_s2_e4_c40_se0.25',
+             'ir_r1_k5_s2_e4_c40_se0.25', 'ir_r1_k5_s2_e4_c40_se0.25'],
+            # stage 3, 28x28 in
+            ['ir_r1_k3_s2_e6_c80_se0.25', 'ir_r1_k3_s1_e4_c80_se0.25', 'ir_r1_k3_s1_e4_c80_se0.25',
+             'ir_r1_k3_s1_e4_c80_se0.25', 'ir_r1_k3_s1_e4_c80_se0.25'],
+            # stage 4, 14x14in
+            ['ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25',
+             'ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25', 'ir_r1_k3_s1_e6_c96_se0.25'],
+            # stage 5, 14x14in
+            ['ir_r1_k5_s2_e6_c192_se0.25', 'ir_r1_k5_s1_e6_c192_se0.25', 'ir_r1_k5_s1_e6_c192_se0.25',
+             'ir_r1_k5_s1_e6_c192_se0.25', 'ir_r1_k5_s1_e6_c192_se0.25', 'ir_r1_k5_s1_e6_c192_se0.25'],
+            # stage 6, 7x7 in
+            ['cn_r1_k1_s1_c320_se0.25'],
+        ]
+        args.img_size = 224
+
+    model = _gen_childnet(
+        arch_list,
+        arch_def,
         num_classes=args.num_classes,
         drop_rate=args.drop,
-        global_pool=args.gp,
-        resunit=args.resunit,
-        dil_conv=args.dil_conv,
-        slice=args.slice)
-
-    if args.local_rank == 0:
-        print("Model Searched Using FLOPs {}".format(size_factor * 32))
+        global_pool=args.gp)
 
     data_config = resolve_data_config(vars(args), model=model, verbose=args.local_rank == 0)
     if args.local_rank == 0:
         logger.info(args)
-
-    choice_num = 6
-    if args.resunit:
-        choice_num += 1
-    if args.dil_conv:
-        choice_num += 2
-
-    if args.local_rank == 0:
-        logger.info("Choice_num: {}".format(choice_num))
-
-    model_est = LatencyEst(model)
 
     if args.local_rank == 0:
         logger.info('Model %s created, param count: %d' %
                     (args.model, sum([m.numel() for m in model.parameters()])))
 
     # data_config = resolve_data_config(vars(args), model=model, verbose=args.local_rank == 0)
-
-    # optionally resume from a checkpoint
-    optimizer_state = None
-    resume_epoch = None
-    if args.resume:
-        optimizer_state, resume_epoch = resume_checkpoint(model, args.resume)
 
     if args.num_gpu > 1:
         if args.amp:
@@ -296,21 +401,7 @@ def main():
     else:
         model.cuda()
 
-    optimizer = create_optimizer_supernet(args, model)
-    if optimizer_state is not None:
-        optimizer.load_state_dict(optimizer_state['optimizer'])
-
     if args.distributed:
-        if args.sync_bn:
-            try:
-                if has_apex:
-                    model = convert_syncbn_model(model)
-                else:
-                    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-                if args.local_rank == 0:
-                    logger.info('Converted model to use Synchronized BatchNorm.')
-            except Exception as e:
-                logging.error('Failed to enable Synchronized BatchNorm. Install Apex or Torch >= 1.1')
         if has_apex:
             model = DDP(model, delay_allreduce=True)
         else:
@@ -319,19 +410,11 @@ def main():
             model = DDP(model, device_ids=[args.local_rank])  # can use device str in Torch >= 1.1
         # NOTE: EMA model does not need to be wrapped by DDP
 
-    lr_scheduler, num_epochs = create_scheduler(args, optimizer)
-
-    start_epoch = 0
-    if args.start_epoch is not None:
-        # a specified start_epoch will always override the resume epoch
-        start_epoch = args.start_epoch
-    elif resume_epoch is not None:
-        start_epoch = resume_epoch
-    if start_epoch > 0:
-        lr_scheduler.step(start_epoch)
-
-    if args.local_rank == 0:
-        logger.info('Scheduled epochs: {}'.format(num_epochs))
+    model_ema = ModelEma(
+        model,
+        decay=args.model_ema_decay,
+        device='cpu' if args.model_ema_force_cpu else '',
+        resume=args.resume)
 
     if args.tiny:
         from dataset.tiny_imagenet import get_newimagenet
@@ -341,25 +424,6 @@ def main():
         if not os.path.exists(train_dir):
             logger.error('Training folder does not exist at: {}'.format(train_dir))
             exit(1)
-        dataset_train = Dataset(train_dir)
-
-        collate_fn = None
-
-        loader_train = create_loader(
-            dataset_train,
-            input_size=data_config['input_size'],
-            batch_size=args.batch_size,
-            is_training=True,
-            re_prob=args.reprob,
-            re_mode=args.remode,
-            color_jitter=args.color_jitter,
-            interpolation='random',  # FIXME cleanly resolve this? data_config['interpolation'],
-            mean=data_config['mean'],
-            std=data_config['std'],
-            num_workers=args.workers,
-            distributed=args.distributed,
-            collate_fn=collate_fn,
-        )
 
         eval_dir = os.path.join(args.data, 'val')
         if not os.path.isdir(eval_dir):
@@ -379,20 +443,39 @@ def main():
             distributed=args.distributed,
         )
 
-    criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing).cuda()
-    val_loss = nn.CrossEntropyLoss().cuda()
+    def accuracy(output, target, topk=(1,)):
+        """Computes the accuracy over the k top predictions for the specified values of k"""
+        maxk = max(topk)
+        batch_size = target.size(0)
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target.view(1, -1).expand_as(pred))
+        return [correct[:k].view(-1).float().sum(0) * 100. / batch_size for k in topk]
 
-    mutator = CreamSupernetTrainingMutator(model, args.how_to_prob, args.pre_prob, choice_num, sta_num)
+    prec1_m = AverageMeter()
+    prec5_m = AverageMeter()
 
-    trainer = CreamSupernetTrainer(model, criterion, optimizer, args.epochs,
-                                   train_loader=loader_train, valid_loader=loader_eval,
-                                   mutator=mutator, batch_size=args.batch_size,
-                                   log_frequency=args.log_interval, est=model_est, meta_sta_epoch=args.meta_sta_epoch,
-                                   update_iter=args.update_iter, slices=args.slice, pool_size=args.pool_size,
-                                   pick_method=args.pick_method, lr_scheduler=lr_scheduler, distributed=args.distributed,
-                                   local_rank=args.local_rank, val_loss=val_loss)
-    trainer.validate()
+    def reduce_tensor(tensor, n):
+        rt = tensor.clone()
+        dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+        rt /= n
+        return rt
 
+    model_ema.ema.eval()
+
+    with torch.no_grad():
+        for step, (x, y) in enumerate(loader_eval):
+            logits = model_ema.ema(x)
+            prec1, prec5 = accuracy(logits, y, topk=(1, 5))
+
+            prec1 = reduce_tensor(prec1, args.world_size)
+            prec5 = reduce_tensor(prec5, args.world_size)
+
+            prec1_m.update(prec1.item(), logits.size(0))
+            prec5_m.update(prec5.item(), logits.size(0))
+
+    if args.local_rank == 0:
+        logger.info("Prec1: %s Prec5: %s", prec1_m.avg, prec5_m.avg)
 
 if __name__ == '__main__':
     main()
