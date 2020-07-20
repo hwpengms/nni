@@ -23,14 +23,10 @@ sh ./examples/nas/cream/supernet.sh
 
 # test the accuracy of searched architectures.
 sh ./examples/nas/cream/test.sh
-## We provide pretrained models in [google drive](https://drive.google.com/drive/folders/1CQjyBryZ4F20Rutj7coF8HWFcedApUn2)
-* 14M
-* 42M
-* 114M
-* 285M
-* 470M
-* 600M
-## To test different FLOPs of models, speicify `--model_selection`.
+
+# We provide 14M/42M/114M/285M/470M/600M pretrained models in [google drive](https://drive.google.com/drive/folders/1CQjyBryZ4F20Rutj7coF8HWFcedApUn2)
+
+# To test different FLOPs of models, speicify `--model_selection`.
 ```
 
 ## Reference
